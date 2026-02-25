@@ -65,7 +65,7 @@ class MiniKotlinCompiler : MiniKotlinBaseVisitor<String>() {
     }
     private fun isVar(name: String) = lookup(name)?.isVar == true
 
-    // ✅ FIX: Unit -> Void (no Unit class needed in Java output)
+    // Unit -> Void (no Unit class needed in Java output)
     private fun javaType(t: MiniKotlinParser.TypeContext): String = when (t.text) {
         "Int" -> "Integer"
         "String" -> "String"
@@ -90,7 +90,6 @@ class MiniKotlinCompiler : MiniKotlinBaseVisitor<String>() {
         }
 
         val j = J()
-
         j.line("import java.util.Objects;")
         j.line()
         j.block("public class $className {") {
@@ -99,6 +98,21 @@ class MiniKotlinCompiler : MiniKotlinBaseVisitor<String>() {
             j.block("public static final class Ref<T> {") {
                 j.line("public T v;")
                 j.line("public Ref(T v) { this.v = v; }")
+            }
+            j.line()
+
+            // Trampoline for CPS-safe while loops
+            j.block("public static final class Trampoline {") {
+                j.line("public Runnable next;")
+                j.block("public void run() {") {
+                    j.line("while (next != null) {")
+                    j.ind++
+                    j.line("Runnable r = next;")
+                    j.line("next = null;")
+                    j.line("r.run();")
+                    j.ind--
+                    j.line("}")
+                }
             }
             j.line()
 
@@ -136,7 +150,6 @@ class MiniKotlinCompiler : MiniKotlinBaseVisitor<String>() {
             for ((pn, pt) in sig.params) declare(pn, VarInfo(pt, isVar = false))
 
             emitBlock(j, f.block(), sig.ret, "__continuation") {
-                // ✅ FIX: Unit/Void fallthrough returns null
                 if (sig.ret == "Void") {
                     j.line("__continuation.accept(null);")
                     j.line("return;")
@@ -215,9 +228,7 @@ class MiniKotlinCompiler : MiniKotlinBaseVisitor<String>() {
             val elseB = if (ifs.block().size > 1) ifs.block(1) else null
 
             fun emitThen() {
-                j.block("{") {
-                    emitBlock(j, thenB, retType, kName, next)
-                }
+                j.block("{") { emitBlock(j, thenB, retType, kName, next) }
             }
             fun emitElse() {
                 j.block("{") {
@@ -241,26 +252,59 @@ class MiniKotlinCompiler : MiniKotlinBaseVisitor<String>() {
             return
         }
 
+        // ✅ CPS-safe while via trampoline
         s.whileStatement()?.let { wh ->
-            val cond = wh.expression()
-            j.line("while (true) {")
-            j.ind++
-            val condCheck: (String) -> Unit = { cv ->
-                j.line("if (!($cv)) break;")
-                emitBlock(j, wh.block(), retType, kName) { j.line("/* loop body end */") }
+            val tName = fresh("__t")
+            val loopClass = fresh("__Loop")
+
+            j.block("{") {
+                j.line("final Trampoline $tName = new Trampoline();")
+
+                j.block("class $loopClass {") {
+                    j.block("void step() {") {
+                        val cond = wh.expression()
+
+                        val emitDecision: (String) -> Unit = { cv ->
+                            j.line("if (!($cv)) {")
+                            j.ind++
+                            // loop ends -> run code after while
+                            next()
+                            j.line("return;")
+                            j.ind--
+                            j.line("} else {")
+                            j.ind++
+
+                            val bodyFallthrough = {
+                                j.line("$tName.next = () -> this.step();")
+                                j.line("return;")
+                            }
+
+                            emitBlock(j, wh.block(), retType, kName, bodyFallthrough)
+
+                            j.ind--
+                            j.line("}")
+                        }
+
+                        if (isPure(cond)) {
+                            emitDecision(pure(cond))
+                        } else {
+                            emitExpr(j, cond) { cv -> emitDecision(cv) }
+                        }
+                    }
+                }
+
+                j.line("final $loopClass __loop = new $loopClass();")
+                j.line("$tName.next = () -> __loop.step();")
+                j.line("$tName.run();")
             }
-            if (isPure(cond)) condCheck(pure(cond)) else emitExpr(j, cond) { cv -> condCheck(cv) }
-            j.ind--
-            j.line("}")
-            next()
+
             return
         }
 
         s.returnStatement()?.let { r ->
             val e = r.expression()
             if (e == null) {
-                // ✅ FIX: Unit/Void returns null
-                if (retType == "Void") j.line("$kName.accept(null);") else j.line("$kName.accept(null);")
+                j.line("$kName.accept(null);")
                 j.line("return;")
             } else {
                 emitExpr(j, e) { v ->
@@ -273,7 +317,7 @@ class MiniKotlinCompiler : MiniKotlinBaseVisitor<String>() {
 
         s.expression()?.let { e ->
             if (isPure(e)) {
-                j.line("${pure(e)};")
+                // Kotlin allows pure expr statements; Java doesn't. Drop them.
                 next()
             } else {
                 emitExpr(j, e) { _ -> next() }
@@ -367,6 +411,8 @@ class MiniKotlinCompiler : MiniKotlinBaseVisitor<String>() {
             use(res)
             j.ind--
             j.line("});")
+            // ✅ Important CPS hygiene: stop current frame; rest is in continuation
+            j.line("return;")
         }
     }
 
