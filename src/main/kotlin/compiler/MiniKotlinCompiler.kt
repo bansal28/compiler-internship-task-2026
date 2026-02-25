@@ -65,7 +65,7 @@ class MiniKotlinCompiler : MiniKotlinBaseVisitor<String>() {
     }
     private fun isVar(name: String) = lookup(name)?.isVar == true
 
-    // Unit -> Void (no Unit class needed in Java output)
+    // Unit -> Void
     private fun javaType(t: MiniKotlinParser.TypeContext): String = when (t.text) {
         "Int" -> "Integer"
         "String" -> "String"
@@ -79,7 +79,6 @@ class MiniKotlinCompiler : MiniKotlinBaseVisitor<String>() {
         scopes.clear()
         id = 0
 
-        // Collect signatures
         for (f in program.functionDeclaration()) {
             val name = f.IDENTIFIER().text
             val ret = javaType(f.type())
@@ -94,14 +93,12 @@ class MiniKotlinCompiler : MiniKotlinBaseVisitor<String>() {
         j.line()
         j.block("public class $className {") {
 
-            // Ref for 'var' across Java lambdas
             j.block("public static final class Ref<T> {") {
                 j.line("public T v;")
                 j.line("public Ref(T v) { this.v = v; }")
             }
             j.line()
 
-            // Trampoline for CPS-safe while loops
             j.block("public static final class Trampoline {") {
                 j.line("public Runnable next;")
                 j.block("public void run() {") {
@@ -116,13 +113,11 @@ class MiniKotlinCompiler : MiniKotlinBaseVisitor<String>() {
             }
             j.line()
 
-            // Emit CPS functions
             for (f in program.functionDeclaration()) {
                 emitFunction(j, f)
                 j.line()
             }
 
-            // Java entrypoint calls MiniKotlin main() if present
             j.block("public static void main(String[] args) {") {
                 val ms = funcs["main"]
                 if (ms != null && ms.params.isEmpty()) {
@@ -170,7 +165,14 @@ class MiniKotlinCompiler : MiniKotlinBaseVisitor<String>() {
         onFallthrough: () -> Unit
     ) {
         push()
-        val stmts = b.statement()
+
+        // ✅ Important: truncate unreachable code after a top-level return in this block
+        val stmtsAll = b.statement()
+        val stmts = ArrayList<MiniKotlinParser.StatementContext>(stmtsAll.size)
+        for (s in stmtsAll) {
+            stmts.add(s)
+            if (s.returnStatement() != null) break
+        }
 
         var cont: () -> Unit = onFallthrough
         for (s in stmts.asReversed()) {
@@ -227,13 +229,9 @@ class MiniKotlinCompiler : MiniKotlinBaseVisitor<String>() {
             val thenB = ifs.block(0)
             val elseB = if (ifs.block().size > 1) ifs.block(1) else null
 
-            fun emitThen() {
-                j.block("{") { emitBlock(j, thenB, retType, kName, next) }
-            }
-            fun emitElse() {
-                j.block("{") {
-                    if (elseB != null) emitBlock(j, elseB, retType, kName, next) else next()
-                }
+            fun emitThen() = j.block("{") { emitBlock(j, thenB, retType, kName, next) }
+            fun emitElse() = j.block("{") {
+                if (elseB != null) emitBlock(j, elseB, retType, kName, next) else next()
             }
 
             if (isPure(cond)) {
@@ -252,7 +250,7 @@ class MiniKotlinCompiler : MiniKotlinBaseVisitor<String>() {
             return
         }
 
-        // ✅ CPS-safe while via trampoline
+        // ✅ CPS-safe trampoline while
         s.whileStatement()?.let { wh ->
             val tName = fresh("__t")
             val loopClass = fresh("__Loop")
@@ -267,16 +265,15 @@ class MiniKotlinCompiler : MiniKotlinBaseVisitor<String>() {
                         val emitDecision: (String) -> Unit = { cv ->
                             j.line("if (!($cv)) {")
                             j.ind++
-                            // loop ends -> run code after while
+                            // Just emit code after loop; DO NOT add manual return here
                             next()
-                            j.line("return;")
                             j.ind--
                             j.line("} else {")
                             j.ind++
 
                             val bodyFallthrough = {
+                                // schedule next iteration
                                 j.line("$tName.next = () -> this.step();")
-                                j.line("return;")
                             }
 
                             emitBlock(j, wh.block(), retType, kName, bodyFallthrough)
@@ -297,7 +294,6 @@ class MiniKotlinCompiler : MiniKotlinBaseVisitor<String>() {
                 j.line("$tName.next = () -> __loop.step();")
                 j.line("$tName.run();")
             }
-
             return
         }
 
@@ -317,7 +313,7 @@ class MiniKotlinCompiler : MiniKotlinBaseVisitor<String>() {
 
         s.expression()?.let { e ->
             if (isPure(e)) {
-                // Kotlin allows pure expr statements; Java doesn't. Drop them.
+                // Drop pure expr statements (Java doesn't allow them)
                 next()
             } else {
                 emitExpr(j, e) { _ -> next() }
@@ -411,7 +407,7 @@ class MiniKotlinCompiler : MiniKotlinBaseVisitor<String>() {
             use(res)
             j.ind--
             j.line("});")
-            // ✅ Important CPS hygiene: stop current frame; rest is in continuation
+            // ✅ CPS hygiene: stop current frame; rest is inside continuation
             j.line("return;")
         }
     }
