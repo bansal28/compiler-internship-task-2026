@@ -243,13 +243,17 @@ class MiniKotlinCompilerTest {
     @Test
     fun `return must stop execution`() {
         val src = """
-            fun main(): Unit {
-              println(1)
-              return
-              println(999)
-            }
-        """.trimIndent()
-
+    fun main(): Unit {
+      if (true) {
+        println(1)
+        return
+      } else {
+        println(2)
+        return
+      }
+      println(999)
+    }
+""".trimIndent()
         val out = compileAndRun(parseString(src)).stdout.trim().lines()
         assertTrue(out == listOf("1"), "Expected only 1, got $out")
     }
@@ -332,5 +336,166 @@ class MiniKotlinCompilerTest {
 
         val out = compileAndRun(parseString(src)).stdout
         assertTrue(out.contains("2"), "Expected 2, got:\n$out")
+    }
+
+    @Test
+    fun `arithmetic precedence and associativity`() {
+        val src = """
+        fun main(): Unit {
+          println(1 + 2 * 3)
+          println((1 + 2) * 3)
+          println(10 - 2 - 3)
+          println(10 - (2 - 3))
+          return
+        }
+    """.trimIndent()
+
+        val out = compileAndRun(parseString(src)).stdout.trim().lines()
+        val expected = listOf("7", "9", "5", "11")
+        assertTrue(out == expected, "Expected $expected but got $out")
+    }
+
+
+
+    @Test
+    fun `equality and inequality`() {
+        val src = """
+        fun main(): Unit {
+          println(1 == 1)
+          println(1 != 2)
+          println(1 == 2)
+          println(2 != 2)
+          return
+        }
+    """.trimIndent()
+
+        val out = compileAndRun(parseString(src)).stdout.trim().lines()
+        val expected = listOf("true", "true", "false", "false")
+        assertTrue(out == expected, "Expected $expected but got $out")
+    }
+
+    @Test
+    fun `nested calls in arguments`() {
+        val src = """
+        fun a(x: Int): Int { println(1); return x + 10 }
+        fun b(x: Int): Int { println(2); return x + 20 }
+        fun c(x: Int, y: Int): Int { println(x + y); return x + y }
+
+        fun main(): Unit {
+          var z: Int = c(a(1), b(2))
+          println(z)
+          return
+        }
+    """.trimIndent()
+
+        val out = compileAndRun(parseString(src)).stdout.trim().lines()
+        // a(1) prints 1, returns 11; b(2) prints 2, returns 22; c prints 33; then print z => 33
+        val expected = listOf("1", "2", "33", "33")
+        assertTrue(out == expected, "Expected $expected but got $out")
+    }
+
+    @Test
+    fun `while loop zero iterations`() {
+        val src = """
+        fun main(): Unit {
+          var i: Int = 5
+          while (i < 3) {
+            println(999)
+            i = i + 1
+          }
+          println(111)
+          return
+        }
+    """.trimIndent()
+
+        val out = compileAndRun(parseString(src)).stdout.trim().lines()
+        val expected = listOf("111")
+        assertTrue(out == expected, "Expected $expected but got $out")
+    }
+
+
+    @Test
+    fun `while condition call different bounds`() {
+        val src = """
+        fun cond(i: Int): Boolean {
+          println(200 + i)
+          return i < 1
+        }
+
+        fun main(): Unit {
+          var i: Int = 0
+          while (cond(i)) {
+            println(i)
+            i = i + 1
+          }
+          println(999)
+          return
+        }
+    """.trimIndent()
+
+        val out = compileAndRun(parseString(src)).stdout.trim().lines()
+        val expected = listOf("200", "0", "201", "999")
+        assertTrue(out == expected, "Expected $expected but got $out")
+    }
+
+    @Test
+    fun `recursion sum`() {
+        val src = """
+        fun sum(n: Int): Int {
+          if (n <= 0) {
+            return 0
+          } else {
+            return n + sum(n - 1)
+          }
+        }
+
+        fun main(): Unit {
+          println(sum(10))
+          return
+        }
+    """.trimIndent()
+
+        val out = compileAndRun(parseString(src)).stdout.trim().lines()
+        val expected = listOf("55")
+        assertTrue(out == expected, "Expected $expected but got $out")
+    }
+
+
+
+    @Test
+    fun `if else returns both branches`() {
+        val src = """
+        fun f(x: Int): Int {
+          if (x > 0) {
+            return 7
+          } else {
+            return 9
+          }
+        }
+        fun main(): Unit {
+          println(f(1))
+          println(f(0))
+          return
+        }
+    """.trimIndent()
+
+        val out = compileAndRun(parseString(src)).stdout.trim().lines()
+        val expected = listOf("7", "9")
+        assertTrue(out == expected, "Expected $expected but got $out")
+    }
+
+    @Test
+    fun `not operator correctness`() {
+        val src = """
+        fun main(): Unit {
+          println(!true)
+          println(!false)
+          return
+        }
+    """.trimIndent()
+
+        val out = compileAndRun(parseString(src)).stdout.trim().lines()
+        val expected = listOf("false", "true")
+        assertTrue(out == expected, "Expected $expected but got $out")
     }
 }
