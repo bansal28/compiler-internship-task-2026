@@ -1,22 +1,3 @@
-//package org.example.compiler
-//
-//import MiniKotlinBaseVisitor
-//import MiniKotlinParser
-//
-//class MiniKotlinCompiler : MiniKotlinBaseVisitor<String>() {
-//
-//    fun compile(program: MiniKotlinParser.ProgramContext, className: String = "MiniProgram"): String {
-//        return """
-//            public class $className {
-//                public static void main(String[] args) {
-//                  return;
-//                }
-//            }
-//        """.trimIndent()
-//    }
-//
-//}
-
 
 package org.example.compiler
 
@@ -25,7 +6,7 @@ import MiniKotlinParser
 
 class MiniKotlinCompiler : MiniKotlinBaseVisitor<String>() {
 
-    private data class FuncSig(
+    private data class FuncSignature(
         val name: String,
         val ret: String,
         val params: List<Pair<String, String>>
@@ -33,7 +14,7 @@ class MiniKotlinCompiler : MiniKotlinBaseVisitor<String>() {
 
     private data class VarInfo(val javaType: String, val isVar: Boolean)
 
-    private class J {
+    private class JavaWriter {
         private val sb = StringBuilder()
         var ind = 0
         private fun pad() = "  ".repeat(ind)
@@ -48,7 +29,7 @@ class MiniKotlinCompiler : MiniKotlinBaseVisitor<String>() {
         override fun toString() = sb.toString()
     }
 
-    private val funcs = linkedMapOf<String, FuncSig>()
+    private val funcs = linkedMapOf<String, FuncSignature>()
     private val scopes = ArrayDeque<MutableMap<String, VarInfo>>()
     private var id = 0
     private fun fresh(prefix: String = "arg") = "${prefix}${id++}"
@@ -85,10 +66,10 @@ class MiniKotlinCompiler : MiniKotlinBaseVisitor<String>() {
             val params = f.parameterList()?.parameter()?.map {
                 it.IDENTIFIER().text to javaType(it.type())
             } ?: emptyList()
-            funcs[name] = FuncSig(name, ret, params)
+            funcs[name] = FuncSignature(name, ret, params)
         }
 
-        val j = J()
+        val j = JavaWriter()
         j.line("import java.util.Objects;")
         j.line()
         j.block("public class $className {") {
@@ -131,7 +112,7 @@ class MiniKotlinCompiler : MiniKotlinBaseVisitor<String>() {
         return j.toString()
     }
 
-    private fun emitFunction(j: J, f: MiniKotlinParser.FunctionDeclarationContext) {
+    private fun emitFunction(j: JavaWriter, f: MiniKotlinParser.FunctionDeclarationContext) {
         val name = f.IDENTIFIER().text
         val sig = funcs[name] ?: error("Missing signature for $name")
 
@@ -158,7 +139,7 @@ class MiniKotlinCompiler : MiniKotlinBaseVisitor<String>() {
     }
 
     private fun emitBlock(
-        j: J,
+        j: JavaWriter,
         b: MiniKotlinParser.BlockContext,
         retType: String,
         kName: String,
@@ -166,7 +147,7 @@ class MiniKotlinCompiler : MiniKotlinBaseVisitor<String>() {
     ) {
         push()
 
-        // ✅ Important: truncate unreachable code after a top-level return in this block
+        // Important: truncate unreachable code after a top-level return in this block
         val stmtsAll = b.statement()
         val stmts = ArrayList<MiniKotlinParser.StatementContext>(stmtsAll.size)
         for (s in stmtsAll) {
@@ -185,7 +166,7 @@ class MiniKotlinCompiler : MiniKotlinBaseVisitor<String>() {
     }
 
     private fun emitStmt(
-        j: J,
+        j: JavaWriter,
         s: MiniKotlinParser.StatementContext,
         retType: String,
         kName: String,
@@ -250,7 +231,7 @@ class MiniKotlinCompiler : MiniKotlinBaseVisitor<String>() {
             return
         }
 
-        // ✅ CPS-safe trampoline while
+        //  CPS-safe trampoline while
         s.whileStatement()?.let { wh ->
             val tName = fresh("__t")
             val loopClass = fresh("__Loop")
@@ -326,7 +307,7 @@ class MiniKotlinCompiler : MiniKotlinBaseVisitor<String>() {
 
     // ---------------- Expressions (CPS) ----------------
 
-    private fun emitExpr(j: J, e: MiniKotlinParser.ExpressionContext, use: (String) -> Unit) {
+    private fun emitExpr(j: JavaWriter, e: MiniKotlinParser.ExpressionContext, use: (String) -> Unit) {
         if (isPure(e)) { use(pure(e)); return }
 
         when (e) {
@@ -382,7 +363,7 @@ class MiniKotlinCompiler : MiniKotlinBaseVisitor<String>() {
     }
 
     private fun emitBin(
-        j: J,
+        j: JavaWriter,
         l: MiniKotlinParser.ExpressionContext,
         r: MiniKotlinParser.ExpressionContext,
         op: String,
@@ -395,7 +376,7 @@ class MiniKotlinCompiler : MiniKotlinBaseVisitor<String>() {
         }
     }
 
-    private fun emitCall(j: J, call: MiniKotlinParser.FunctionCallExprContext, use: (String) -> Unit) {
+    private fun emitCall(j: JavaWriter, call: MiniKotlinParser.FunctionCallExprContext, use: (String) -> Unit) {
         val fn = call.IDENTIFIER().text
         val target = if (funcs.containsKey(fn)) fn else "Prelude.$fn"
         val args = call.argumentList().expression()
@@ -407,13 +388,13 @@ class MiniKotlinCompiler : MiniKotlinBaseVisitor<String>() {
             use(res)
             j.ind--
             j.line("});")
-            // ✅ CPS hygiene: stop current frame; rest is inside continuation
+            //  CPS hygiene: stop current frame; rest is inside continuation
             j.line("return;")
         }
     }
 
     private fun emitArgs(
-        j: J,
+        j: JavaWriter,
         args: List<MiniKotlinParser.ExpressionContext>,
         i: Int,
         acc: MutableList<String>,
